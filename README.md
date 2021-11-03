@@ -1,71 +1,35 @@
-# Try Out Development Containers: C++
+# Deployed System
 
-A **development container** is a running [Docker](https://www.docker.com) container with a well-defined tool/runtime stack and its prerequisites. You can try out development containers with **[GitHub Codespaces](https://github.com/features/codespaces)** or **[Visual Studio Code Remote - Containers](https://aka.ms/vscode-remote/containers)**.
+## Design assumptions and scope
+The deployed instance makes following assumptions:
+- The system will handle web requests from users only, web jobs and services will be filtered by the Application Gateway
+- The system is geolocated and local to East US region only, all other traffic will be denied access
+- The system will be hidden behind a private network with the only public endpoints being the Application Gateway
+- A finite number of users will use the system
+- Data will be stored only in the East US region (no geo redundancy)
 
-This is a sample project that lets you try out either option in a few easy steps. We have a variety of other [vscode-remote-try-*](https://github.com/search?q=org%3Amicrosoft+vscode-remote-try-&type=Repositories) sample projects, too.
+## Technical assumptions
+- A word must be correctly formed for it to be translated. Eg.: "One zero zero six", "Five-o", "1 thousand twelve" are incorrectly formed word numbers
+- Only the international numbering system is supported
+- Decimal and negative values are not supported
+- The response is simply the translated number, or the sum in case of additions
 
-> **Note:** If you already have a Codespace or dev container, you can jump to the [Things to try](#things-to-try) section.
+## Implemented components
+- Azure Function App instance to translate words and write translation history to data store, azure function app is hidden behind a private virtual network and is only accessible via the frontdoor
+- Azure Cosmos DB with tuned consistency and partition key to store translation history, traffic is restricted to private VN and IP addresses
+- An Azure Frontdoor instance load balances incoming requests, since only one instance is deployed, it essentailly just forwards the request
+- An Azure WAF restricts traffic from US geopolitical region
 
-## Setting up the development container
 
-### GitHub Codespaces
-Follow these steps to open this sample in a Codespace:
-1. Click the Code drop-down menu and select the **Open with Codespaces** option.
-1. Select **+ New codespace** at the bottom on the pane.
+## Partially implemented/unimplemented components
+- The AddWords API has been deployed but not thoroughly tested
+- The /getHistory API is not implemented
+- Security is enforced on the Azure functions instance requiring users to authenticate before making the REST API call
+- Azure CosmosDB instance can accept requests from a hardcoded IP address only for security purposes.
 
-For more info, check out the [GitHub documentation](https://docs.github.com/en/free-pro-team@latest/github/developing-online-with-codespaces/creating-a-codespace#creating-a-codespace).
-
-### VS Code Remote - Containers
-Follow these steps to open this sample in a container using the VS Code Remote - Containers extension:
-
-1. If this is your first time using a development container, please ensure your system meets the pre-reqs (i.e. have Docker installed) in the [getting started steps](https://aka.ms/vscode-remote/containers/getting-started).
-
-2. To use this repository, you can either open the repository in an isolated Docker volume:
-
-    - Press <kbd>F1</kbd> and select the **Remote-Containers: Try a Sample...** command.
-    - Choose the "C++" sample, wait for the container to start, and try things out!
-        > **Note:** Under the hood, this will use the **Remote-Containers: Clone Repository in Container Volume...** command to clone the source code in a Docker volume instead of the local filesystem. [Volumes](https://docs.docker.com/storage/volumes/) are the preferred mechanism for persisting container data.
-
-   Or open a locally cloned copy of the code:
-
-   - Clone this repository to your local filesystem.
-   - Press <kbd>F1</kbd> and select the **Remote-Containers: Open Folder in Container...** command.
-   - Select the cloned copy of this folder, wait for the container to start, and try things out!
-
-## Things to try
-
-Once you have this sample opened, you'll be able to work with it like you would locally.
-
-> **Note:** This container runs as a non-root user with sudo access by default. Comment out `"remoteUser": "vscode"` in `.devcontainer/devcontainer.json` if you'd prefer to run as root.
-
-Some things to try:
-
-1. **Edit:**
-   - Open `main.cpp`
-   - Try adding some code and check out the language features.
-   - Notice that the C++ extension is already installed in the container since the `.devcontainer/devcontainer.json` lists `"ms-vscode.cpptools"` as an extension to install automatically when the container is created.
-1. **Terminal:** Press <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>\`</kbd> and type `uname` and other Linux commands from the terminal window.
-1. **Build, Run, and Debug:**
-   - Open `main.cpp`
-   - Add a breakpoint (e.g. on line 7).
-   - Press <kbd>F5</kbd> to launch the app in the container.
-   - Once the breakpoint is hit, try hovering over variables, examining locals, and more.
-
-## Contributing
-
-This project welcomes contributions and suggestions. Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.microsoft.com.
-
-When you submit a pull request, a CLA-bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., label, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
-
-## License
-
-Copyright © Microsoft Corporation All rights reserved.<br />
-Licensed under the MIT License. See LICENSE in the project root for license information.
+## Design Decisions
+- An Azure Function app should suffice the computational needs since the system is handling a limited amount of functionality with limited number of users and limited computational time needed, for load balancing to come into picture multiple instances of Azure functions App must be deployed
+- Session level consistency for Azure Cosmos DB should work since it guarantees read consistency for the same geographic region and all reads will have consistent data
+- CosmosDB instance has a retention of 30 days with the assumption that only 30 days' worth of history will be stored for users.
+- "UserId" which is the Identity name determined by authentication service will be used as the partition key, every user, even if they constantly use the system, won't be able to make more than 4 requests per minute, assuming they do this for nearly nine hours straight for 30 days, the size of each partition will not be more than 65k entries, which may affect performance but it is an extreme case, for most users, the partition size will be less than a thousand entries and hence easily queryable.
+- The rowkey for each partition must be a unique one, for simplicity of implementation this can be the timestamp of the operation in "yyyyMMddhhmmss", since the same user cannot use the system from two locations at the same time. This avoids collisions and also allows for range queries if required. 
